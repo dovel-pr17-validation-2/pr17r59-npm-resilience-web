@@ -1,0 +1,19 @@
+function License() {
+  return (
+    <div className="bg-white py-2 pl-4">
+      <p className="text-sm text-gray-600">
+        Content on this site is in the public domain under a{' '}
+        <a
+          href="https://creativecommons.org/licenses/by-sa/4.0"
+          target="_blank"
+          rel="noopener noreferrer"
+        >
+          Creative Commons CC BY-SA 4.0 license
+        </a>
+        .
+      </p>
+    </div>
+  )
+}
+
+export default License

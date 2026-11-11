@@ -1,0 +1,29 @@
+import type { Tag } from '@prisma-client'
+import { useQuery } from '@tanstack/react-query'
+
+async function fetchTagsRequest({ queryKey }) {
+  const [_key, { webSlug }] = queryKey
+  const response = await fetch(`/api/tags?web=${webSlug}`)
+  const { data: tags } = await response.json()
+  return tags.filter((tag) => tag._count.listings > 0)
+}
+
+export default function useTagsPublic({ webSlug }) {
+  const {
+    data: tags,
+    isPending,
+    isError,
+  } = useQuery<Tag[]>({
+    queryKey: ['tags', { webSlug, public: true }],
+    queryFn: fetchTagsRequest,
+    refetchOnWindowFocus: false,
+    staleTime: Infinity,
+    enabled: Boolean(webSlug),
+  })
+
+  return {
+    tags,
+    isPending,
+    isError,
+  }
+}

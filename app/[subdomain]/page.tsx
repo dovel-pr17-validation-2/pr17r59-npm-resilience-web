@@ -1,0 +1,472 @@
+import { cache } from 'react'
+import type { Metadata } from 'next'
+import { notFound } from 'next/navigation'
+import { fetchPlaceCalEvents } from '@/lib/placecal'
+import prisma from '@prisma-rw'
+import { compressJson } from '@helpers/compression'
+import { otherWebs, visibleWebPlacements } from '@db/listingRepository'
+import { getAllWebs } from '@db/webRepository'
+import Web from './Web'
+
+const CENTRAL_NODE_ID = 999
+
+export default async function WebPage(props) {
+  const params = await props.params
+  const { subdomain: webSlug } = params
+  const rawData = await getData({ webSlug })
+  const events = await fetchPlaceCalEvents(webSlug)
+
+  if (!rawData) {
+    return notFound()
+  }
+
+  const { data, webData, categories, tags } = rawData
+
+  return (
+    <Web
+      data={data}
+      categories={categories}
+      tags={tags}
+      events={events}
+      features={webData.features}
+      webId={webData.id}
+      webName={webData.title}
+      webDescription={webData.description}
+      webIsPublished={webData.published}
+      webContactEmail={webData.contactEmail}
+      webSlug={webSlug}
+      relatedWebs={webData.relations?.filter((w) => w.published && w.location)}
+    />
+  )
+}
+
+/**
+ * Wrapped in `cache()` because `getData` and `generateMetadata` both need the
+ * web, and Next only dedupes `fetch`, not Prisma.
+ */
+const getWebForPage = cache(async (webSlug: string) =>
+  prisma.web.findFirst({
+    where: {
+      slug: webSlug,
+      deletedAt: null,
+    },
+    include: {
+      features: {
+        select: {
+          feature: true,
+          enabled: true,
+        },
+      },
+      relations: {
+        select: {
+          slug: true,
+          title: true,
+          published: true,
+          location: {
+            select: { latitude: true, longitude: true },
+          },
+        },
+      },
+    },
+  }),
+)
+
+export async function generateMetadata(props): Promise<Metadata> {
+  const params = await props.params
+  const { subdomain: webSlug } = params
+  const webData = await getWebForPage(webSlug)
+
+  if (!webData) {
+    return null
+  }
+
+  return {
+    title: `${webData.title} | Resilience Web`,
+    openGraph: {
+      title: `${webData.title} | Resilience Web`,
+      images: [{ url: webData.image }],
+      description:
+        webData.description ??
+        'A web of connections, showing local groups working to co-create a more socially and environmentally just city.',
+    },
+    alternates: {
+      canonical: `https://${webData.slug}.resilienceweb.org.uk`,
+    },
+  }
+}
+
+export async function generateStaticParams() {
+  const webs = await getAllWebs()
+  const paths = webs.map((w) => `${w.slug}`)
+  const subdomains = paths.map((path) => ({
+    subdomain: path,
+  }))
+
+  return subdomains
+}
+
+type DataType = {
+  // gzip+base64 compressed network visualization data ({ nodes, edges }).
+  // Kept compressed across the wire and decompressed on the client in Web.tsx.
+  data: string
+  categories: Array<{ label: string; color: string; icon: string }>
+  tags: Array<{ id: number; label: string; icon: string | null }>
+  webData: {
+    id: number
+    title: string
+    description: string
+    published: boolean
+    image: string
+    slug: string
+    features: Record<string, any>
+    contactEmail: string
+    relations?: Array<{
+      slug: string
+      title: string
+      published: boolean
+      location: { latitude: number; longitude: number } | null
+    }>
+  }
+}
+
+async function getData({ webSlug }): Promise<DataType> {
+  const webData = await getWebForPage(webSlug)
+
+  if (!webData) {
+    console.log(`[RW] Web not found for webSlug ${webSlug}`)
+    return null
+  }
+
+  const categories = await prisma.category.findMany({
+    where: {
+      web: {
+        slug: webSlug,
+        deletedAt: null,
+      },
+    },
+    select: {
+      id: true,
+      label: true,
+      color: true,
+      icon: true,
+      listings: {
+        where: {
+          listing: {
+            inactive: false,
+            pending: false,
+          },
+        },
+        orderBy: { id: 'asc' },
+        select: {
+          slug: true,
+          featured: true,
+          tags: {
+            select: { id: true, label: true, icon: true },
+          },
+          listing: {
+            select: {
+              id: true,
+              title: true,
+              description: true,
+              image: true,
+              seekingVolunteers: true,
+              website: true,
+              email: true,
+              createdAt: true,
+              socials: {
+                select: { platform: true, url: true },
+              },
+              actions: {
+                select: { type: true, url: true },
+              },
+              location: {
+                select: {
+                  latitude: true,
+                  longitude: true,
+                  description: true,
+                },
+              },
+              placements: visibleWebPlacements,
+              relations: {
+                select: {
+                  id: true,
+                  placements: {
+                    where: { web: { slug: webSlug } },
+                    select: {
+                      category: {
+                        select: { id: true, color: true, label: true },
+                      },
+                    },
+                    take: 1,
+                  },
+                },
+              },
+            },
+          },
+        },
+      },
+    },
+  })
+
+  if (!categories) {
+    console.log(`[RW] Web or listings not found for webSlug ${webSlug}`)
+    return null
+  }
+
+  const categoriesCount = categories.length
+  const categoryNodePositions = drawCirclePoints(
+    categoriesCount,
+    categoriesCount * 150,
+    {
+      x: 0,
+      y: 0,
+    },
+  )
+  const categoryPositions = {}
+  categories.forEach((category, index) => {
+    categoryPositions[category.id] = categoryNodePositions[index]
+  })
+
+  const transformedData = {
+    nodes: [],
+    edges: [],
+  }
+
+  const relationEdgeKeys = new Set<string>()
+
+  // Calculate if web is older than 2 months
+  const twoMonthsAgo = new Date()
+  twoMonthsAgo.setMonth(twoMonthsAgo.getMonth() - 2)
+  const webIsOlderThanTwoMonths = webData.createdAt < twoMonthsAgo
+
+  // Calculate date for 1 month ago
+  const twoWeeksAgo = new Date()
+  twoWeeksAgo.setMonth(twoWeeksAgo.getMonth() - 1)
+
+  categories.map((category) => {
+    category.listings.map((placement) => {
+      const {
+        id: listingId,
+        title,
+        description,
+        image,
+        socials,
+        actions,
+        seekingVolunteers,
+        location,
+        relations,
+        website,
+        email,
+        createdAt,
+        placements: webPlacements,
+      } = placement.listing
+      const { slug, featured, tags } = placement
+
+      const isNew = webIsOlderThanTwoMonths && createdAt > twoWeeksAgo
+
+      const transformedNode: any = {
+        id: `listing-${listingId}`,
+        title,
+        description,
+        image: image ?? '',
+        location,
+        socials,
+        actions,
+        category: {
+          color: `#${category.color}`,
+          label: category.label,
+          icon: category.icon,
+        },
+        slug,
+        tags,
+        // below are for network node styling and data
+        label: title,
+        color: `#${category.color}`,
+        website,
+        email,
+      }
+
+      const alsoListedIn = otherWebs(webPlacements, webSlug)
+      if (alsoListedIn.length > 0) {
+        transformedNode.alsoListedIn = alsoListedIn
+      }
+
+      if (isNew) {
+        transformedNode.new = isNew
+      }
+
+      if (seekingVolunteers) {
+        transformedNode.seekingVolunteers = true
+      }
+      if (featured && new Date(featured) > new Date()) {
+        transformedNode.featured = featured
+      }
+      transformedData.nodes.push(transformedNode)
+
+      relations.map((relation) => {
+        // Only link to related listings that are part of this web
+        if (relation.placements.length === 0) {
+          return
+        }
+        const from = `listing-${listingId}`
+        const to = `listing-${relation.id}`
+
+        if (relationEdgeKeys.has(`${to}|${from}`)) {
+          return
+        }
+        relationEdgeKeys.add(`${from}|${to}`)
+
+        transformedData.edges.push({
+          from,
+          to,
+          dashes: true,
+          physics: false,
+          smooth: {
+            enabled: true,
+            type: 'continuous',
+            roundness: 0,
+          },
+        })
+      })
+
+      transformedData.edges.push({
+        from: category.id * 1000,
+        to: `listing-${listingId}`,
+        length: category.listings.length * 15,
+        smooth: {
+          enabled: true,
+          type: 'continuous',
+          roundness: 0,
+        },
+      })
+    })
+  })
+
+  // Main node
+  transformedData.nodes.push({
+    id: CENTRAL_NODE_ID,
+    label: webData.title,
+    color: '#fcba03',
+    group: 'central-node',
+    font: {
+      size: 56,
+    },
+    fixed: {
+      x: true,
+      y: true,
+    },
+    shape: 'box',
+    shapeProperties: {
+      borderRadius: 3,
+    },
+    margin: 10,
+    borderWidthSelected: 2,
+    widthConstraint: false,
+  })
+
+  for (const category of categories) {
+    const categoryId = category.id * 1000
+
+    transformedData.nodes.push({
+      id: categoryId,
+      label: category.label,
+      group: 'category',
+      icon: category.icon,
+    })
+
+    // From main node to category node
+    transformedData.edges.push({
+      from: CENTRAL_NODE_ID,
+      to: categoryId,
+      width: 2,
+      selectedWidth: 3,
+      smooth: {
+        enabled: true,
+        type: 'continuous',
+        roundness: 0,
+      },
+    })
+  }
+
+  const relatedWebs = webData.relations
+  for (const relatedWeb of relatedWebs) {
+    const relatedWebId = `related-web-${relatedWeb.slug}`
+    transformedData.nodes.push({
+      id: relatedWebId,
+      label: relatedWeb.title,
+      group: 'related-web',
+    })
+
+    transformedData.edges.push({
+      from: CENTRAL_NODE_ID,
+      to: relatedWebId,
+      width: 2,
+      selectedWidth: 3,
+      length: 200,
+      smooth: {
+        enabled: true,
+        type: 'continuous',
+        roundness: 0,
+      },
+    })
+  }
+
+  // Label-sorted, as the client hook sorted them: the category's index here is
+  // what picks a listing's placeholder pattern.
+  const publicCategories = categories
+    .map(({ label, color, icon }) => ({ label, color, icon }))
+    .sort((a, b) => {
+      if (a.label < b.label) return -1
+      if (a.label > b.label) return 1
+      return 0
+    })
+
+  // Only tags carried by a visible listing are worth offering as a filter.
+  const tagsById = new Map<
+    number,
+    { id: number; label: string; icon: string | null }
+  >()
+  for (const category of categories) {
+    for (const placement of category.listings) {
+      for (const tag of placement.tags) {
+        tagsById.set(tag.id, { id: tag.id, label: tag.label, icon: tag.icon })
+      }
+    }
+  }
+  const publicTags = [...tagsById.values()].sort((a, b) => a.id - b.id)
+
+  return {
+    // Compress only the network visualization data — it's the large payload.
+    // webData is small and is consumed directly for props/metadata.
+    data: compressJson(transformedData),
+    categories: publicCategories,
+    tags: publicTags,
+    // @ts-ignore
+    webData,
+  }
+}
+
+function drawCirclePoints(points, radius, center) {
+  const positions = []
+  const slice = (2 * Math.PI) / points
+  for (let i = 0; i < points; i++) {
+    const angle = slice * i
+
+    const radiusToUse = i % 2 === 1 ? radius / 2 : radius
+    const newX = Math.round(center.x + radiusToUse * Math.cos(angle))
+    const newY = Math.round(center.y + radiusToUse * Math.sin(angle))
+    const p = { x: newX, y: newY }
+
+    positions.push(p)
+  }
+
+  return positions
+}
+
+export const dynamicParams = true
+// Regenerated on demand whenever a listing, category or tag changes (see the
+// `revalidatePath` calls across app/api), so this timer exists only for the
+// events tab, whose data comes from PlaceCal rather than from us. A day is as
+// coarse as it can be without the 14-day window creeping shut; finished events
+// are hidden on the client, against the visitor's own clock.
+export const revalidate = 86400

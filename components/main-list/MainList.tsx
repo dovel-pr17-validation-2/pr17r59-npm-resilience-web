@@ -1,0 +1,63 @@
+'use client'
+
+import { memo } from 'react'
+import NextLink from 'next/link'
+import { REMOTE_URL } from '@helpers/config'
+import Footer from '@components/footer'
+import { Button } from '@components/ui/button'
+import Item from './item'
+
+/** Two rows of the three-column grid — about a desktop viewport. */
+const EAGERLY_LOADED_IMAGES = 6
+
+interface MainListProps {
+  filteredItems: any[]
+  webSlug: string
+  /** Every category in this web, label-sorted. */
+  categories?: { label: string }[]
+}
+
+const MainList = ({ filteredItems, webSlug, categories }: MainListProps) => {
+  const categoriesIndexesObj = {}
+  categories?.map((c, i) => (categoriesIndexesObj[c.label] = i))
+  const categoriesIndexes = categoriesIndexesObj
+
+  return (
+    <>
+      <div className="flex min-h-[calc(100vh-302px)] flex-col items-center px-4 py-2">
+        <div className="mt-4 w-full max-w-[1400px]">
+          {filteredItems.length > 0 ? (
+            <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+              {filteredItems.map((item, index) => (
+                <Item
+                  categoriesIndexes={categoriesIndexes}
+                  dataItem={item}
+                  key={item.id}
+                  priority={index < EAGERLY_LOADED_IMAGES}
+                />
+              ))}
+            </div>
+          ) : (
+            <div className="mt-8 flex flex-col items-center gap-4">
+              <p className="max-w-[400px] text-center text-gray-600">
+                No listings were found that match your search 🤔 Maybe propose
+                the listing to the maintainers?
+              </p>
+              <NextLink href={`${REMOTE_URL}/new-listing/${webSlug}`}>
+                <Button
+                  variant="default"
+                  className="bg-primary hover:bg-primary/90"
+                >
+                  Propose new listing
+                </Button>
+              </NextLink>
+            </div>
+          )}
+        </div>
+      </div>
+      <Footer hideBorder />
+    </>
+  )
+}
+
+export default memo(MainList)

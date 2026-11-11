@@ -1,0 +1,269 @@
+'use client'
+
+import { memo } from 'react'
+import {
+  HiUserGroup,
+  HiOutlineLink,
+  HiExternalLink,
+  HiOutlineMail,
+} from 'react-icons/hi'
+import Link from 'next/link'
+import { useParams, useSearchParams } from 'next/navigation'
+import { toast } from 'sonner'
+import { actionTypes, actionIconStyles } from '@helpers/actions'
+import { getWebUrl } from '@helpers/config'
+import { socialMediaPlatforms, socialIconStyles } from '@helpers/socials'
+import { sanitizeLink } from '@helpers/utils'
+import AlsoOnWebs from '@components/also-on-webs'
+import CategoryTag from '@components/category-tag'
+import ListingImage from '@components/listing-image'
+import RichText from '@components/rich-text'
+import TagLabel from '@components/tag-label'
+import { Badge } from '@components/ui/badge'
+import { Button } from '@components/ui/button'
+import {
+  Dialog,
+  DialogContent,
+  DialogHeader,
+  DialogTitle,
+} from '@components/ui/dialog'
+import { Tooltip, TooltipContent, TooltipTrigger } from '@components/ui/tooltip'
+
+interface DialogProps {
+  isOpen: boolean
+  isMobile?: boolean
+  item: any
+  onClose: () => void
+  isFullScreen?: boolean
+}
+
+const ListingDialog = ({
+  isOpen,
+  isMobile,
+  item,
+  onClose,
+  isFullScreen = false,
+}: DialogProps) => {
+  const { subdomain } = useParams<{ subdomain: string }>()
+
+  const websiteSanitized = sanitizeLink(item.website)
+
+  const showCopiedToClipboardToast = () => {
+    toast.info('Copied to clipboard', {
+      description:
+        'The link to this listing is copied to your clipboard and ready to be shared.',
+      duration: 4000,
+    })
+  }
+
+  const individualListingLink = `${getWebUrl(subdomain)}/${item.slug}`
+  const handleShareButtonClick = () => {
+    void navigator.clipboard.writeText(individualListingLink)
+    showCopiedToClipboardToast()
+  }
+
+  const socialLinks = (
+    <div className="mt-2 flex items-center gap-2">
+      {item.socials &&
+        item.socials.map((social, index) => {
+          const config = socialIconStyles[social.platform.toLowerCase()]
+
+          const Icon = socialMediaPlatforms.find(
+            (p) => p.id === social.platform.toLowerCase(),
+          )?.icon
+
+          if (!Icon) {
+            return null
+          }
+
+          return (
+            <a
+              key={`social-${index}`}
+              href={social.url}
+              target="_blank"
+              rel="noopener noreferrer"
+              className={`group inline-flex h-10 w-10 items-center justify-center rounded-full ${config.bgClass} ${config.textClass} ring-1 ${config.ringClass} transition-all ${config.hoverBgClass} ${config.hoverTextClass} ${config.hoverRingClass}`}
+            >
+              <Icon className="h-5 w-5" />
+            </a>
+          )
+        })}
+    </div>
+  )
+
+  const listingWebsite = (() => {
+    if (!item?.website) {
+      return null
+    }
+
+    if (item.website.includes('http')) {
+      return item.website
+    }
+
+    return `//${item.website}`
+  })()
+
+  const searchParams = useSearchParams()
+  const webSearchParam = searchParams.get('web')
+
+  return (
+    <Dialog open={isOpen} onOpenChange={onClose}>
+      <DialogContent
+        className="max-h-dvh sm:max-h-[85dvh] sm:max-w-2xl md:max-w-190 flex flex-col pt-10 sm:pt-6"
+        forceMount={isFullScreen ? true : undefined}
+      >
+        {item.image && (
+          <ListingImage
+            alt={`${item.label} cover image`}
+            src={item.image}
+            sizes="(max-width: 768px) 90vw, 300px"
+            priority
+          />
+        )}
+
+        <DialogHeader className="flex items-center pb-0">
+          <DialogTitle className="flex items-center">
+            {item.label}
+            <HiOutlineLink
+              className="ml-1 cursor-pointer text-xl transition-colors duration-200 hover:text-primary"
+              onClick={handleShareButtonClick}
+            />
+          </DialogTitle>
+        </DialogHeader>
+
+        <div className="overflow-y-auto flex-1 pr-2">
+          <div className="flex flex-wrap items-center gap-2">
+            <CategoryTag
+              colorHex={item.category.color}
+              iconName={item.category.icon}
+            >
+              {item.category.label}
+            </CategoryTag>
+
+            {item.website && (
+              <a
+                href={listingWebsite}
+                target="_blank"
+                rel="noopener noreferrer"
+                className="inline-flex items-center gap-1 rounded-full border border-transparent bg-gray-100 px-2 py-0.5 text-xs text-gray-700 transition-colors hover:bg-gray-200 md:gap-1.5 md:px-2.5"
+              >
+                <HiExternalLink className="h-3 w-3 md:h-3.5 md:w-3.5" />
+                <span className="max-w-45 truncate md:max-w-70">
+                  {websiteSanitized}
+                </span>
+              </a>
+            )}
+
+            {item.email && (
+              <a
+                href={`mailto:${item.email}`}
+                className="inline-flex items-center gap-1 rounded-full border border-transparent bg-gray-100 px-2 py-0.5 text-xs text-gray-700 transition-colors hover:bg-gray-200 md:gap-1.5 md:px-2.5"
+              >
+                <HiOutlineMail className="h-3 w-3 md:h-3.5 md:w-3.5" />
+                <span className="max-w-45 truncate md:max-w-70">
+                  {item.email}
+                </span>
+              </a>
+            )}
+
+            {item.seekingVolunteers && (
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <span className="inline-flex cursor-help items-center gap-1 rounded-full border border-transparent bg-emerald-100 px-2.5 py-0.5 text-xs font-medium text-emerald-700 md:gap-1.5 md:px-3">
+                    <HiUserGroup className="h-3 w-3 md:h-3.5 md:w-3.5" />
+                    Seeking volunteers
+                  </span>
+                </TooltipTrigger>
+                <TooltipContent side="bottom" className="max-w-50">
+                  <p className="text-center text-sm">
+                    This group is seeking volunteers or members. Get in touch
+                    with them if you'd like to help.
+                  </p>
+                </TooltipContent>
+              </Tooltip>
+            )}
+          </div>
+
+          <AlsoOnWebs webs={item.alsoListedIn} className="mt-3" />
+
+          {isMobile && (
+            <div className="mt-4 flex justify-between">{socialLinks}</div>
+          )}
+
+          <div className="my-4 prose prose-base prose-headings:font-semibold prose-a:text-blue-600 mb-12 max-w-none">
+            <RichText html={item.description} />
+          </div>
+
+          {item.actions && item.actions.length > 0 && (
+            <div className="mb-4 flex flex-wrap gap-2">
+              {item.actions.map((action, index) => {
+                const config = actionIconStyles[action.type.toLowerCase()]
+                const actionConfig = actionTypes.find(
+                  (a) => a.id === action.type.toLowerCase(),
+                )
+
+                if (!actionConfig) {
+                  return null
+                }
+
+                const Icon = actionConfig.icon
+
+                return (
+                  <a
+                    key={`action-${index}`}
+                    href={action.url}
+                    target="_blank"
+                    rel="noopener noreferrer"
+                    className={`group inline-flex items-center gap-2 rounded-full px-3 py-1.5 text-sm font-medium transition-all ${config.bgClass} ${config.textClass} ring-1 ${config.ringClass} ${config.hoverBgClass} ${config.hoverTextClass} ${config.hoverRingClass}`}
+                  >
+                    <Icon className="h-4 w-4" />
+                    <span>{actionConfig.label}</span>
+                  </a>
+                )
+              })}
+            </div>
+          )}
+
+          <div className="mt-4 flex flex-wrap justify-end gap-1">
+            {item.tags?.map((tag) => {
+              const urlEncodedTag = tag.label.replace(' ', '+')
+              return (
+                <Link
+                  key={tag.id}
+                  href={`${getWebUrl(subdomain)}?web=${webSearchParam}&tags=${urlEncodedTag}`}
+                  onClick={onClose}
+                  className="flex"
+                >
+                  <Badge
+                    className="transition-opacity select-none hover:opacity-80"
+                    style={{ backgroundColor: tag.color ?? '#797d7a' }}
+                    clickable
+                  >
+                    <TagLabel tag={tag} />
+                  </Badge>
+                </Link>
+              )
+            })}
+          </div>
+        </div>
+
+        {!isMobile && (
+          <div className="flex justify-between border-t pt-3 mt-2 bg-background">
+            {socialLinks}
+
+            <Link href={individualListingLink}>
+              <Button
+                variant="default"
+                className="mt-2 bg-primary hover:bg-primary/90"
+              >
+                Go to listing page
+              </Button>
+            </Link>
+          </div>
+        )}
+      </DialogContent>
+    </Dialog>
+  )
+}
+
+export default memo(ListingDialog)

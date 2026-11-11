@@ -1,0 +1,575 @@
+'use client'
+
+import { useEffect } from 'react'
+import {
+  useForm,
+  useFormContext,
+  useFormState,
+  useWatch,
+  FormProvider,
+} from 'react-hook-form'
+import { AiOutlineLoading } from 'react-icons/ai'
+import dynamic from 'next/dynamic'
+import Link from 'next/link'
+import { zodResolver } from '@hookform/resolvers/zod'
+import type { Category } from '@prisma-client'
+import { z } from 'zod'
+import { scrollToFormError } from '@helpers/scrollToFormError'
+import { generateSlug } from '@helpers/utils'
+import RichTextEditor from '@components/rich-text-editor'
+import { Button } from '@components/ui/button'
+import { Checkbox } from '@components/ui/checkbox'
+import {
+  Form,
+  FormField,
+  FormItem,
+  FormLabel,
+  FormControl,
+  FormMessage,
+  FormDescription,
+} from '@components/ui/form'
+import { Input } from '@components/ui/input'
+import {
+  MultiSelect,
+  type MultiSelectOption,
+} from '@components/ui/multi-select'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue,
+} from '@components/ui/select'
+import { Separator } from '@components/ui/separator'
+import useListings from '@hooks/listings/useListings'
+import useCreateTag from '@hooks/tags/useCreateTag'
+import useTags from '@hooks/tags/useTags'
+import useWeb from '@hooks/webs/useWeb'
+import { useAppContext } from '@store/hooks'
+import Actions from './Actions'
+import ImageUpload from './ImageUpload'
+import SharePlacements from './SharePlacements'
+import SocialMedia from './SocialMedia'
+
+const SetLocationMap = dynamic(
+  () => import('@components/admin/set-location-map'),
+  {
+    ssr: false,
+    loading: () => <div className="pt-5 text-center">Loading…</div>,
+  },
+)
+
+const socialItemSchema = z.object({
+  platform: z.string(),
+  url: z.url({ error: 'Please enter a valid URL (https://...)' }),
+})
+
+const actionItemSchema = z.object({
+  type: z.string(),
+  url: z.url({ error: 'Please enter a valid URL (https://...)' }),
+})
+
+const listingFormSchema = z.object({
+  id: z.number().or(z.null()),
+  title: z.string().min(1, { error: 'Title is required' }),
+  description: z.string().min(1, { error: 'Description is required' }),
+  category: z.string().min(1, { error: 'Category is required' }),
+  email: z.email({ error: 'Please enter a valid email' }).or(z.literal('')),
+  website: z
+    .url({ error: 'Please enter a valid URL (https://...)' })
+    .or(z.literal('')),
+  socials: z.array(socialItemSchema),
+  actions: z.array(actionItemSchema),
+  seekingVolunteers: z.boolean(),
+  inactive: z.boolean(),
+  image: z.any(),
+  slug: z
+    .string()
+    .min(1, { error: 'Slug is required' })
+    .regex(/^[a-z0-9-]+$/, {
+      error: 'Only lowercase letters, numbers, and hyphens are allowed',
+    }),
+  tags: z.array(z.object({ value: z.number(), label: z.string() })),
+  relations: z.array(z.object({ value: z.number(), label: z.string() })),
+  noPhysicalLocation: z.boolean(),
+  location: z
+    .object({
+      latitude: z.number(),
+      longitude: z.number(),
+      description: z.string(),
+    })
+    .optional(),
+  latitude: z.number().optional(),
+  longitude: z.number().optional(),
+  locationDescription: z.string().optional(),
+})
+
+type FormValues = z.infer<typeof listingFormSchema>
+
+interface Props {
+  categories: Category[]
+  listing?: Listing
+  handleSubmit: (data: any) => void
+  isSubmitting?: boolean
+}
+
+const SlugField = ({ isEditMode }) => {
+  const { selectedWebSlug } = useAppContext()
+  const { register, setValue, control } = useFormContext<FormValues>()
+  // `useWatch` subscribes this component to the title, where `watch()` only
+  // returns it: the React Compiler caches the returned value on the identity of
+  // `watch`, which never changes, so the title would be read once and frozen.
+  const title = useWatch({ control, name: 'title' })
+  const { errors } = useFormState({ control, name: 'slug' })
+
+  useEffect(() => {
+    if (isEditMode) return
+
+    const generatedSlug = generateSlug(title)
+    if (title.trim() !== '') {
+      setValue('slug', generatedSlug, { shouldValidate: true })
+    }
+  }, [setValue, title, isEditMode])
+
+  return (
+    <div>
+      <label htmlFor="slug" className="mb-1 block text-sm font-semibold">
+        Link to listing page
+      </label>
+      <div className="flex">
+        <span className="inline-flex shrink-0 items-center rounded-l-md border border-r-0 border-gray-300 bg-gray-50 px-3 text-sm text-gray-500">
+          {`${selectedWebSlug}.resilienceweb.org.uk/`}
+        </span>
+        <Input {...register('slug')} id="slug" className="rounded-l-none" />
+      </div>
+      {errors.slug && (
+        <p className="mt-1 text-sm text-red-600">{errors.slug.message}</p>
+      )}
+    </div>
+  )
+}
+
+const ListingForm = ({
+  categories,
+  listing,
+  handleSubmit: onSubmit,
+  isSubmitting = false,
+}: Props) => {
+  const { selectedWebSlug } = useAppContext()
+  const { web } = useWeb({ webSlug: selectedWebSlug })
+  const { tags } = useTags()
+  const { mutateAsync: createTag } = useCreateTag()
+  const { listings } = useListings()
+
+  const tagOptions: MultiSelectOption[] = (() => {
+    if (!tags) return []
+    return tags.map((t) => ({
+      value: t.id,
+      label: t.label,
+    }))
+  })()
+
+  const relationOptions: MultiSelectOption[] = (() => {
+    if (!listings) return []
+    return listings
+      .filter((l) => l.title !== listing?.title)
+      .map((l) => ({
+        value: l.id,
+        label: l.title,
+      }))
+  })()
+
+  const getFormValues = (listing: Listing | undefined): FormValues => ({
+    id: listing?.id || null,
+    title: listing?.title || '',
+    description: listing?.description || '',
+    category: listing?.categoryId ? String(listing.categoryId) : undefined,
+    email: listing?.email || '',
+    website: listing?.website || '',
+    socials: listing?.socials || [],
+    actions: listing?.actions || [],
+    seekingVolunteers: listing?.seekingVolunteers || false,
+    inactive: listing?.inactive || false,
+    image: listing?.image,
+    slug: listing?.slug || '',
+    tags: listing?.tags?.map((t) => ({ value: t.id, label: t.label })) || [],
+    relations:
+      listing?.relations?.map((l) => ({ value: l.id, label: l.title })) || [],
+    noPhysicalLocation: listing?.location?.noPhysicalLocation || false,
+    location:
+      listing?.location?.latitude && listing?.location?.longitude
+        ? {
+            latitude: listing.location.latitude,
+            longitude: listing.location.longitude,
+            description: listing.location.description,
+          }
+        : undefined,
+  })
+
+  const methods = useForm<FormValues>({
+    resolver: zodResolver(listingFormSchema),
+    mode: 'onTouched',
+    defaultValues: getFormValues(listing),
+  })
+
+  const { handleSubmit, setValue, reset, control } = methods
+
+  useEffect(() => {
+    if (listing) {
+      reset(getFormValues(listing))
+    }
+  }, [listing, reset])
+
+  const noPhysicalLocation = useWatch({
+    control,
+    name: 'noPhysicalLocation',
+  })
+
+  const tagsValues = useWatch({
+    control,
+    name: 'tags',
+  })
+
+  const relationsValues = useWatch({
+    control,
+    name: 'relations',
+  })
+
+  const handleSubmitForm = (submittedData: any) => {
+    const data = {
+      ...submittedData,
+      category: Number(submittedData.category),
+      ...(web?.id ? { webId: web.id } : {}),
+    }
+
+    const isNewImage = data.image instanceof File
+    if (!isNewImage && data.image) {
+      delete data.image
+    }
+    if (!data.noPhysicalLocation && data.location) {
+      data.latitude = data.location.latitude
+      data.longitude = data.location.longitude
+      data.locationDescription = data.location.description
+    }
+    data.removeLocation = !data.location && !data.noPhysicalLocation
+    delete data.location
+    data.tags = data.tags?.map((t) => t.value)
+    data.relations = data.relations?.map((l) => l.value)
+    if (listing) {
+      const currentListingTagIds = listing?.tags?.map((t) => t.id)
+      const removedTags = currentListingTagIds?.filter(
+        (t) => !data.tags.includes(t),
+      )
+      data.removedTags = removedTags
+
+      const currentListingRelationIds = listing?.relations?.map((r) => r.id)
+      const removedRelations = currentListingRelationIds?.filter(
+        (l) => !data.relations.includes(l),
+      )
+      data.removedRelations = removedRelations
+    }
+    onSubmit(data)
+  }
+
+  const sharedWith = (listing as any)?.sharedWith ?? []
+
+  return (
+    <FormProvider {...methods}>
+      <Form {...methods}>
+        <form
+          onSubmit={handleSubmit(handleSubmitForm, scrollToFormError)}
+          encType="multipart/form-data"
+          className="p-4 sm:p-6"
+        >
+          {sharedWith.length > 0 && (
+            <div className="mb-6 rounded-md border border-amber-200 bg-amber-50 p-3 text-sm text-amber-900">
+              <p className="font-medium">
+                Shared with {sharedWith.length} other{' '}
+                {sharedWith.length === 1 ? 'web:' : 'webs:'}{' '}
+                {sharedWith.map((s: any) => s.web.title).join(', ')}
+              </p>
+              <p className="mt-1">
+                Edits to title, description, location, image, social links and
+                actions apply everywhere this listing is shown. Category, tags,
+                slug and featured state are per-web.
+              </p>
+            </div>
+          )}
+
+          <FormField
+            control={methods.control}
+            name="title"
+            render={({ field }) => (
+              <FormItem>
+                <FormLabel className="font-semibold">Title*</FormLabel>
+                <FormControl>
+                  <Input {...field} />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={methods.control}
+            name="category"
+            render={({ field }) => {
+              return (
+                <FormItem className="mt-4">
+                  <FormLabel className="font-semibold">Category*</FormLabel>
+                  <Select
+                    onValueChange={field.onChange}
+                    value={field.value ? String(field.value) : undefined}
+                  >
+                    <FormControl>
+                      <SelectTrigger>
+                        <SelectValue placeholder="Select a category" />
+                      </SelectTrigger>
+                    </FormControl>
+                    <FormDescription>
+                      {categories.length === 0 ? (
+                        <span>
+                          Looks like you haven't created categories yet. You can
+                          add some{' '}
+                          <Link
+                            href="/admin/categories"
+                            className="text-green-700 hover:text-green-800"
+                          >
+                            on this page
+                          </Link>
+                          .
+                        </span>
+                      ) : (
+                        'Categories can be easily changed later'
+                      )}
+                    </FormDescription>
+                    <SelectContent>
+                      {categories.map((c) => (
+                        <SelectItem key={c.id} value={String(c.id)}>
+                          {c.label}
+                        </SelectItem>
+                      ))}
+                    </SelectContent>
+                  </Select>
+                  <FormMessage />
+                </FormItem>
+              )
+            }}
+          />
+
+          <FormField
+            control={methods.control}
+            name="description"
+            render={() => (
+              <FormItem className="mt-4">
+                <FormLabel className="font-semibold">Description*</FormLabel>
+                <FormDescription>
+                  Please don't include phone numbers or email addresses in the
+                  description.
+                </FormDescription>
+                <FormControl>
+                  <RichTextEditor name="description" />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <div className="mt-4">
+            <ImageUpload name="image" />
+          </div>
+
+          <FormField
+            control={methods.control}
+            name="email"
+            render={({ field }) => (
+              <FormItem className="mt-4">
+                <FormLabel className="font-semibold">
+                  Contact email for organisation
+                </FormLabel>
+                <FormDescription>
+                  {web?.contactEmail
+                    ? 'When the listing is created, we will send a courtesy email to this address letting them know about it.'
+                    : 'To send a courtesy email to this address when listing is created, please set a contact email for your web in Web Settings first.'}
+                </FormDescription>
+                <FormControl>
+                  <Input type="email" {...field} />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={methods.control}
+            name="website"
+            render={({ field }) => (
+              <FormItem className="mt-4">
+                <FormLabel className="font-semibold">Website</FormLabel>
+                <FormControl>
+                  <Input {...field} />
+                </FormControl>
+                <FormMessage />
+              </FormItem>
+            )}
+          />
+
+          <SocialMedia />
+          <Actions />
+
+          <div className="mt-4">
+            <SlugField isEditMode={Boolean(listing)} />
+          </div>
+
+          <div className="mt-4">
+            <FormLabel className="font-semibold">Tags</FormLabel>
+            <MultiSelect
+              options={tagOptions}
+              placeholder="Select or start typing to create tag..."
+              value={tagsValues}
+              onChange={(newValue) =>
+                setValue('tags', newValue as { value: number; label: string }[])
+              }
+              creatable
+              onCreateOption={async (inputValue) => {
+                const newTag = await createTag({
+                  label: inputValue,
+                  webId: web?.id,
+                })
+                setValue('tags', [
+                  ...tagsValues,
+                  { value: newTag.id, label: newTag.label },
+                ])
+              }}
+              formatCreateLabel={(inputValue) => `Create tag "${inputValue}"`}
+            />
+          </div>
+
+          <div className="mt-4">
+            <FormLabel className="font-semibold">Related listings</FormLabel>
+            <MultiSelect
+              options={relationOptions}
+              value={relationsValues}
+              onChange={(newValue) =>
+                setValue(
+                  'relations',
+                  newValue as { value: number; label: string }[],
+                )
+              }
+            />
+          </div>
+
+          <FormField
+            control={methods.control}
+            name="seekingVolunteers"
+            render={({ field }) => (
+              <FormItem className="mt-8 flex flex-row items-start gap-2">
+                <FormControl>
+                  <Checkbox
+                    checked={field.value}
+                    onCheckedChange={field.onChange}
+                  />
+                </FormControl>
+                <div className="flex flex-col gap-1">
+                  <FormLabel>Currently seeking volunteers</FormLabel>
+                  <FormDescription>
+                    Would this group benefit from having more volunteers?
+                  </FormDescription>
+                </div>
+              </FormItem>
+            )}
+          />
+
+          <FormField
+            control={methods.control}
+            name="inactive"
+            render={({ field }) => (
+              <FormItem className="mt-8 flex flex-row items-start gap-2">
+                <FormControl>
+                  <Checkbox
+                    checked={field.value}
+                    onCheckedChange={field.onChange}
+                  />
+                </FormControl>
+                <div className="flex flex-col gap-1">
+                  <FormLabel>Mark as inactive</FormLabel>
+                  <FormDescription>
+                    Inactive listings are hidden from the public web page
+                  </FormDescription>
+                </div>
+              </FormItem>
+            )}
+          />
+
+          <Separator className="my-4" />
+          <FormField
+            control={methods.control}
+            name="noPhysicalLocation"
+            render={({ field }) => (
+              <>
+                <FormLabel className="font-semibold">Location</FormLabel>
+                <FormItem className="mt-4 flex flex-row items-start gap-2">
+                  <FormControl>
+                    <Checkbox
+                      checked={field.value}
+                      onCheckedChange={field.onChange}
+                    />
+                  </FormControl>
+                  <div className="flex flex-col gap-1">
+                    <FormLabel>No physical location</FormLabel>
+                    <FormDescription>
+                      If this listing does not have a physical location, please
+                      check this box
+                    </FormDescription>
+                  </div>
+                </FormItem>
+              </>
+            )}
+          />
+
+          {!noPhysicalLocation && (
+            <div className="mt-4">
+              <SetLocationMap
+                latitude={listing?.location?.latitude}
+                longitude={listing?.location?.longitude}
+                locationDescription={listing?.location?.description}
+              />
+            </div>
+          )}
+
+          {listing && web?.id && (
+            <SharePlacements
+              listingId={listing.id}
+              listingTitle={listing.title}
+              currentWebId={web.id}
+              currentWebTitle={web.title}
+              currentSlug={(listing as any).slug ?? ''}
+              sharedWith={sharedWith}
+            />
+          )}
+
+          <div className="mt-6 flex justify-end">
+            <Button
+              type="submit"
+              variant={listing?.pending ? 'purple' : 'default'}
+              disabled={isSubmitting}
+            >
+              {isSubmitting && <AiOutlineLoading className="animate-spin" />}{' '}
+              {listing ? (listing.pending ? 'Approve' : 'Update') : 'Create'}
+            </Button>
+          </div>
+
+          {/* <div className="mt-2 flex justify-end">
+            <FormMessage className="text-sm">
+              {!isValid &&
+                isDirty &&
+                'There are some errors, please scroll up and check them.'}
+            </FormMessage>
+          </div> */}
+        </form>
+      </Form>
+    </FormProvider>
+  )
+}
+
+export default ListingForm

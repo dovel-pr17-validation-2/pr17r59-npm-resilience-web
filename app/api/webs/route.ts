@@ -1,0 +1,224 @@
+import type { NextRequest } from 'next/server'
+import { sanitizeRichText } from '@/lib/sanitize-rich-text'
+import { Prisma } from '@prisma-client'
+import * as Sentry from '@sentry/nextjs'
+import checkWebInactiveTask from '@trigger/check-web-inactive'
+import prisma from '@prisma-rw'
+import { getSessionSafe } from '@auth'
+import { PROTOCOL, REMOTE_HOSTNAME } from '@helpers/config'
+import { sendEmail } from '@helpers/email'
+import { FEATURES } from '@helpers/features'
+import { stringToBoolean } from '@helpers/utils'
+import WebCreatedAdminEmail from '@components/emails/WebCreatedAdminEmail'
+import WebCreatedEmail from '@components/emails/WebCreatedEmail'
+
+const defaultCategories = [
+  {
+    label: 'Environment',
+    color: '7ed957',
+  },
+  {
+    label: 'Community',
+    color: 'ff66c4',
+  },
+  {
+    label: 'Social justice',
+    color: 'ff5757',
+  },
+  {
+    label: 'Food',
+    color: 'a4791b',
+  },
+  {
+    label: 'Health',
+    color: 'd195e9',
+  },
+  {
+    label: 'Education',
+    color: 'c9e265',
+  },
+  {
+    label: 'Human rights',
+    color: 'a2b342',
+  },
+]
+
+export async function GET(request: NextRequest) {
+  try {
+    const searchParams = request.nextUrl.searchParams
+    const withListingsParam = searchParams.get('withListings')
+    const withAdminInfoParam = searchParams.get('withAdminInfo')
+    const onlyPublishedParam = searchParams.get('published')
+    const withListings = withListingsParam
+      ? stringToBoolean(withListingsParam)
+      : false
+    const withAdminInfo = withAdminInfoParam
+      ? stringToBoolean(withAdminInfoParam)
+      : false
+    const onlyPublished = onlyPublishedParam
+      ? stringToBoolean(onlyPublishedParam)
+      : false
+
+    const include = {
+      listings: {},
+      features: {},
+      webAccess: {},
+    } satisfies Prisma.WebInclude
+
+    if (withListings) {
+      include.listings = {
+        select: {
+          id: true,
+          webId: true,
+          updatedAt: true,
+        },
+      }
+    }
+
+    if (withAdminInfo) {
+      include.features = true
+      include.webAccess = true
+    }
+
+    const webs = await prisma.web.findMany({
+      where: {
+        deletedAt: null,
+        ...(onlyPublished
+          ? {
+              published: true,
+            }
+          : {}),
+      },
+      include,
+    })
+
+    return Response.json({ data: webs })
+  } catch (e) {
+    console.error(`[RW] Unable to fetch webs - ${e}`)
+    Sentry.captureException(e)
+    return Response.json(
+      {
+        error: "We couldn't load Webs right now. Please try again in a moment.",
+      },
+      {
+        status: 500,
+      },
+    )
+  }
+}
+
+export async function POST(request: NextRequest) {
+  try {
+    const session = await getSessionSafe(request.headers)
+    if (!session?.user) {
+      return Response.json(
+        {
+          error: `You don't have enough permissions to perform this action.`,
+        },
+        {
+          status: 403,
+        },
+      )
+    }
+
+    const { title, slug, description, contactEmail, location } =
+      await request.json()
+
+    const web = await prisma.web.create({
+      data: {
+        title,
+        slug,
+        description: sanitizeRichText(description),
+        contactEmail,
+        published: false,
+        categories: {
+          create: defaultCategories,
+        },
+        features: {
+          create: {
+            feature: FEATURES.showMap,
+            enabled: true,
+          },
+        },
+        webAccess: {
+          create: {
+            email: session.user.email,
+            role: 'OWNER',
+          },
+        },
+        ...(location
+          ? {
+              location: {
+                create: {
+                  latitude: location.latitude,
+                  longitude: location.longitude,
+                  description: location.description,
+                },
+              },
+            }
+          : {}),
+      },
+    })
+
+    const webCreatedEmailComponent = WebCreatedEmail({
+      webTitle: `${web.title}`,
+      url: `${PROTOCOL}://${REMOTE_HOSTNAME}/admin`,
+    })
+
+    const webCreatedAdminEmailComponent = WebCreatedAdminEmail({
+      webTitle: `${web.title}`,
+      email: `${session?.user.email}`,
+      slug: web.slug,
+    })
+
+    await sendEmail({
+      to: session?.user.email,
+      subject: `Thank you for creating ${web.title} Resilience Web 🎉`,
+      email: webCreatedEmailComponent,
+    })
+
+    await sendEmail({
+      to: REMOTE_HOSTNAME.includes('localhost')
+        ? process.env.RW_LOCAL_ADMIN_EMAIL
+        : 'info@resilienceweb.org.uk',
+      subject: `New web created 🎉: ${web.title}`,
+      email: webCreatedAdminEmailComponent,
+    })
+
+    try {
+      const handle = await checkWebInactiveTask.trigger({
+        email: session?.user.email,
+        webId: web.id,
+      })
+      console.log('[RW]Task is running with handle', handle.id)
+    } catch (e) {
+      console.error(`[RW] Unable to schedule web inactive check - ${e}`)
+      Sentry.captureException(e)
+    }
+
+    return Response.json({
+      web,
+    })
+  } catch (error) {
+    if (error.code === 'P2002') {
+      return Response.json(
+        { error: 'A web with the same title or link already exists.' },
+        {
+          status: 409,
+        },
+      )
+    } else {
+      console.error(`[RW] Unable to create web - ${error}`)
+      Sentry.captureException(error)
+      return Response.json(
+        {
+          error:
+            "We couldn't create your Web right now. Please try again in a moment.",
+        },
+        {
+          status: 500,
+        },
+      )
+    }
+  }
+}

@@ -1,0 +1,16 @@
+node_modules
+bin
+obj
+*.*
+!*.ts
+!*.tsx
+!*.js
+!*.jsx
+!*.mts
+!*.mjs
+prisma/generated
+trigger.config.js
+postcss.config.js
+next.config.js
+eslint.config.js
+next-env.d.ts

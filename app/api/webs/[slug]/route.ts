@@ -1,0 +1,262 @@
+import { revalidatePath } from 'next/cache'
+import type { NextRequest } from 'next/server'
+import { sanitizeRichText } from '@/lib/sanitize-rich-text'
+import { Prisma } from '@prisma-client'
+import type { Web } from '@prisma/browser'
+import * as Sentry from '@sentry/nextjs'
+import prisma from '@prisma-rw'
+import { getSessionSafe } from '@auth'
+import uploadImage from '@helpers/uploadImage'
+import { stringToBoolean } from '@helpers/utils'
+
+type Data = {
+  web: Web
+}
+
+export async function GET(
+  request: NextRequest,
+  props: { params: Promise<{ slug: string }> },
+) {
+  const params = await props.params
+  const slug = params.slug
+
+  const searchParams = request.nextUrl.searchParams
+  const withListingsParam = searchParams.get('withListings')
+  const withAdminInfoParam = searchParams.get('withAdminInfo')
+  const withListings = withListingsParam
+    ? stringToBoolean(withListingsParam)
+    : false
+  const withAdminInfo = withAdminInfoParam
+    ? stringToBoolean(withAdminInfoParam)
+    : false
+
+  const include = {
+    listings: {},
+    features: {},
+    relations: {},
+    location: {},
+    webAccess: {},
+  } satisfies Prisma.WebInclude
+
+  if (withListings) {
+    include.listings = {
+      include: {
+        listing: { include: { location: true } },
+        category: {
+          select: { id: true, color: true, label: true, icon: true },
+        },
+        tags: { select: { id: true, label: true, icon: true } },
+      },
+    }
+  }
+
+  if (withAdminInfo) {
+    include.webAccess = {
+      include: {
+        user: true,
+      },
+    }
+    include.features = true
+    include.relations = true
+    include.location = true
+  }
+
+  const web = await prisma.web.findFirst({
+    where: {
+      slug,
+      deletedAt: null,
+    },
+    include,
+  })
+
+  if (!web) {
+    return Response.json({ message: 'Web not found' }, { status: 404 })
+  }
+
+  // Flatten placements to listing-shaped objects so admin consumers keep working unchanged.
+  const flattened = withListings
+    ? {
+        ...web,
+        listings: (web.listings as any[]).map((p) => ({
+          ...p.listing,
+          slug: p.slug,
+          featured: p.featured,
+          category: p.category,
+          tags: p.tags,
+        })),
+      }
+    : web
+
+  return Response.json({
+    web: flattened,
+  })
+}
+
+export async function PUT(request, props) {
+  const params = await props.params
+  const session = await getSessionSafe(request.headers)
+
+  if (!session?.user) {
+    return new Response('Unauthorized', {
+      status: 403,
+    })
+  }
+
+  const access = await prisma.webAccess.findFirst({
+    where: {
+      email: session.user.email,
+      web: {
+        slug: params.slug,
+        deletedAt: null,
+      },
+    },
+    select: { role: true },
+  })
+  const isWebOwner = access?.role === 'OWNER'
+
+  if (!isWebOwner && session?.user.role !== 'admin') {
+    return new Response('Unauthorized', {
+      status: 403,
+    })
+  }
+
+  try {
+    const slug = params.slug
+    const formData = await request.formData()
+    const relatedWebIds = formData.get('relatedWebIds')
+    const relationsArray = relatedWebIds !== '' ? relatedWebIds.split(',') : []
+    const relationsToConnect = relationsArray.map((relationId) => ({
+      id: Number(relationId),
+    }))
+    const latitude = formData.get('latitude')
+    const longitude = formData.get('longitude')
+    const locationDescription = formData.get('locationDescription')
+
+    const locationData = {
+      ...(latitude && longitude && locationDescription
+        ? {
+            upsert: {
+              create: {
+                latitude: parseFloat(latitude),
+                longitude: parseFloat(longitude),
+                description: locationDescription,
+              },
+              update: {
+                latitude: parseFloat(latitude),
+                longitude: parseFloat(longitude),
+                description: locationDescription,
+              },
+            },
+          }
+        : {}),
+    }
+
+    const newData: Prisma.WebUpdateInput = {
+      title: formData.get('title'),
+      published: stringToBoolean(formData.get('published')),
+      contactEmail: formData.get('contactEmail'),
+      description: sanitizeRichText(formData.get('description')),
+      relations: {
+        set: relationsToConnect,
+      },
+      location: locationData,
+    }
+
+    const image = formData.get('image')
+    let imageUrl: string | null = null
+    if (image && image !== 'undefined' && image !== 'null') {
+      const { image: oldImageKey } = await prisma.web.findFirst({
+        where: { slug, deletedAt: null },
+      })
+      imageUrl = await uploadImage(image, oldImageKey, { resize: false })
+      if (imageUrl) {
+        newData.image = imageUrl
+      }
+    }
+
+    const updatedWeb: Data['web'] = await prisma.web.update({
+      where: {
+        slug,
+      },
+      data: newData,
+    })
+
+    if (updatedWeb.published) {
+      // Only set publishedAt on first publish, so re-publishing doesn't reset it
+      await prisma.web.updateMany({
+        where: {
+          slug,
+          publishedAt: null,
+        },
+        data: {
+          publishedAt: new Date(),
+        },
+      })
+    }
+
+    revalidatePath(`/${params.slug}`)
+    revalidatePath('/')
+    return Response.json({
+      web: updatedWeb,
+    })
+  } catch (e) {
+    console.error(`[RW] Unable to update web - ${e}`)
+    Sentry.captureException(e)
+    return new Response(`Unable to update web - ${e}`, {
+      status: 500,
+    })
+  }
+}
+
+export async function PATCH(request, props) {
+  const params = await props.params
+  const session = await getSessionSafe(request.headers)
+
+  if (session?.user.role !== 'admin') {
+    return new Response('Unauthorized', {
+      status: 403,
+    })
+  }
+
+  try {
+    const slug = params.slug
+    const { feature, enabled, webId } = await request.json()
+
+    const updatedWeb: Data['web'] = await prisma.web.update({
+      where: {
+        slug,
+      },
+      data: {
+        features: {
+          upsert: {
+            where: {
+              webId_feature: {
+                webId,
+                feature,
+              },
+            },
+            update: {
+              enabled,
+            },
+            create: {
+              feature,
+              enabled,
+            },
+          },
+        },
+      },
+    })
+
+    revalidatePath(`/${params.slug}`)
+
+    return Response.json({
+      web: updatedWeb,
+    })
+  } catch (e) {
+    console.error(`[RW] Unable to update web - ${e}`)
+    Sentry.captureException(e)
+    return new Response(`Unable to update web - ${e}`, {
+      status: 500,
+    })
+  }
+}

@@ -1,0 +1,110 @@
+'use client'
+
+import { BsPersonCircle } from 'react-icons/bs'
+import { FiChevronDown } from 'react-icons/fi'
+import { RxHamburgerMenu } from 'react-icons/rx'
+import dynamic from 'next/dynamic'
+import Link from 'next/link'
+import { useRouter } from 'next/navigation'
+import posthog from 'posthog-js'
+import { useSession, signOut } from '@auth-client'
+import GetInTouchButton from '@components/contact-dialog/GetInTouchButton'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger,
+} from '@components/ui/dropdown-menu'
+import useIsMobile from '@hooks/application/useIsMobile'
+import useWeb from '@hooks/webs/useWeb'
+import { useAppContext } from '@store/hooks'
+import NotificationsFeed from './NotificationsFeed'
+
+const WebSelector = dynamic(() => import('./web-selector'))
+
+const Nav = ({ onOpen }) => {
+  const { data: session } = useSession()
+  const router = useRouter()
+  const isMobile = useIsMobile()
+  const { selectedWebSlug } = useAppContext()
+  const { web } = useWeb({ webSlug: selectedWebSlug })
+
+  const handleSignOut = async () => {
+    await signOut({
+      fetchOptions: {
+        onSuccess: () => {
+          posthog.capture('user-signed-out')
+          posthog.reset()
+          router.push('/auth/signin')
+        },
+      },
+    })
+  }
+
+  return (
+    <div className="max-w-[100vw] flex-1 border-b border-gray-200 bg-[#fafafa] px-4">
+      <div className="flex h-16 items-center justify-between">
+        <button
+          onClick={onOpen}
+          className="mr-4 rounded-md border border-gray-300 p-2 hover:bg-gray-100 lg:hidden"
+          aria-label="open menu"
+        >
+          <RxHamburgerMenu className="h-5 w-5" />
+        </button>
+
+        <div className="flex w-full items-center justify-between">
+          <div className="mr-4">
+            <WebSelector />
+          </div>
+
+          <div className="flex items-center gap-2">
+            <GetInTouchButton
+              userEmail={session?.user?.email}
+              webName={web?.title}
+            />
+            <NotificationsFeed />
+
+            <DropdownMenu>
+              <DropdownMenuTrigger asChild>
+                {isMobile ? (
+                  <button className="flex items-center gap-1 rounded-full text-gray-600 hover:text-gray-900">
+                    <BsPersonCircle className="h-8 w-8" />
+                    <FiChevronDown className="h-4 w-4" />
+                  </button>
+                ) : (
+                  <button className="flex items-center gap-2 rounded-full px-2 py-1 text-gray-700 hover:text-gray-900">
+                    <div className="flex flex-col items-end leading-tight text-left">
+                      {session?.user?.name && (
+                        <span className="text-sm font-semibold">
+                          {session?.user?.name}
+                        </span>
+                      )}
+                      {session?.user?.email && (
+                        <span className="text-xs text-gray-600">
+                          {session.user.email}
+                        </span>
+                      )}
+                    </div>
+                    <FiChevronDown className="h-4 w-4" />
+                  </button>
+                )}
+              </DropdownMenuTrigger>
+              <DropdownMenuContent align="end" className="w-56">
+                <DropdownMenuItem asChild>
+                  <Link href="/admin/user-settings">User settings</Link>
+                </DropdownMenuItem>
+                <DropdownMenuSeparator />
+                <DropdownMenuItem onClick={handleSignOut}>
+                  Sign out
+                </DropdownMenuItem>
+              </DropdownMenuContent>
+            </DropdownMenu>
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}
+
+export default Nav

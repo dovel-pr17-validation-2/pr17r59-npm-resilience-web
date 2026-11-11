@@ -1,0 +1,49 @@
+import type { Metadata } from 'next'
+import { getHygraphClient } from '../../lib/hygraph'
+import News from './News'
+
+export const metadata: Metadata = {
+  title: 'News | Resilience Web',
+  description: 'News & updates from the Resilience Web team',
+  openGraph: {
+    title: 'News | Resilience Web',
+    description: 'News & updates from the Resilience Web team',
+  },
+  alternates: {
+    canonical: 'https://www.resilienceweb.org.uk/news',
+  },
+}
+
+export default async function NewsPage() {
+  const { posts } = await getData()
+
+  return <News posts={posts} />
+}
+
+async function getData(): Promise<any> {
+  const graphcms = getHygraphClient()
+
+  const { pages } = await graphcms.request<{ pages: [] }>(`
+    {
+      pages(where: { displayInBlogSection: true }, orderBy: date_DESC) {
+        slug
+        title
+        author {
+          name
+        }
+        date
+        excerpt
+        displayInBlogSection
+        coverImage {
+          url
+        }
+      }
+    }`)
+
+  return {
+    posts: pages,
+  }
+}
+
+export const dynamicParams = true
+export const revalidate = 3600

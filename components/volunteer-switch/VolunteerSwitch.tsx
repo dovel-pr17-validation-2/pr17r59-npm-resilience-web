@@ -1,0 +1,35 @@
+'use client'
+
+import { memo } from 'react'
+import { Checkbox } from '@components/ui/checkbox'
+
+interface VolunteerSwitchProps {
+  handleSwitchChange: (checked: boolean) => void
+  checked: boolean
+}
+
+const VolunteerSwitch = ({
+  handleSwitchChange,
+  checked,
+}: VolunteerSwitchProps) => {
+  return (
+    <div className="w-full pt-1">
+      <div className="flex items-center gap-2">
+        <Checkbox
+          id="volunteer"
+          checked={Boolean(checked)}
+          onCheckedChange={handleSwitchChange}
+          className="text-primary"
+        />
+        <label
+          htmlFor="volunteer"
+          className="text-sm leading-none font-medium peer-disabled:cursor-not-allowed peer-disabled:opacity-70"
+        >
+          Seeking volunteers
+        </label>
+      </div>
+    </div>
+  )
+}
+
+export default memo(VolunteerSwitch)

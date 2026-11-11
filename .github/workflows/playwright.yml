@@ -1,0 +1,60 @@
+name: Playwright Tests
+permissions:
+  contents: read
+on:
+  pull_request:
+jobs:
+  test:
+    timeout-minutes: 60
+    runs-on: ubuntu-latest
+    env:
+      DATABASE_URL: postgresql://postgres:password@localhost:5432/postgres?schema=public&sslmode=disable
+      # helpers/email.ts constructs the Resend client at module scope, so
+      # anything importing @auth (the sign-in endpoint, every /admin page)
+      # throws at import time without a key. Nothing is ever sent: the only
+      # test that authenticates writes its own OTP straight to the database.
+      RESEND_API_KEY: re_ci_placeholder_never_used
+      BETTER_AUTH_SECRET: ci-secret-not-used-for-anything-real
+      # lib/supabase-storage.ts calls createClient() at module scope, which
+      # throws on an empty URL. Only image upload and public image URLs use it,
+      # and no test uploads, so a placeholder host is enough.
+      NEXT_PUBLIC_SUPABASE_URL: https://placeholder.supabase.co
+      SUPABASE_SECRET_KEY: ci-placeholder-never-used
+    services:
+      postgres:
+        image: postgres:17
+        env:
+          POSTGRES_PASSWORD: password
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 10s
+          --health-timeout 5s
+          --health-retries 5
+        ports:
+          # Maps tcp port 5432 on service container to the host
+          - 5432:5432
+    steps:
+    - uses: actions/checkout@v6
+    - uses: actions/setup-node@v6
+      with:
+        node-version-file: '.nvmrc'
+    - name: Install dependencies
+      run: npm ci
+    - name: Generate Prisma Client
+      run: npx prisma generate
+    - name: Reset database
+      run: npx prisma migrate reset --force
+    - name: Seed database
+      run: npx prisma db seed
+    - name: Install Playwright Browsers
+      run: npx playwright install --with-deps chromium
+    - name: Run Playwright tests
+      run: npx playwright test
+      env:
+        NEXT_PUBLIC_BASE_URL: http://localhost:4000
+    - uses: actions/upload-artifact@v5
+      if: always()
+      with:
+        name: playwright-report
+        path: playwright-report/
+        retention-days: 7

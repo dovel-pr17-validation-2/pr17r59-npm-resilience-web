@@ -1,0 +1,152 @@
+'use client'
+
+import { use, useEffect } from 'react'
+import { HiArrowLeft } from 'react-icons/hi'
+import { PiInfoBold } from 'react-icons/pi'
+import NextLink from 'next/link'
+import { useRouter, useSearchParams } from 'next/navigation'
+import ListingForm from '@components/admin/listing-form'
+import { Alert, AlertTitle } from '@components/ui/alert'
+import { Button } from '@components/ui/button'
+import { Spinner } from '@components/ui/spinner'
+import useCategories from '@hooks/categories/useCategories'
+import useListing from '@hooks/listings/useListing'
+import useListingEdits from '@hooks/listings/useListingEdits'
+import useUpdateListing from '@hooks/listings/useUpdateListing'
+import { useAppContext } from '@store/hooks'
+
+export default function ListingPage({ params }) {
+  const { slug } = use<{ slug: string }>(params)
+  const router = useRouter()
+  const searchParams = useSearchParams()
+  const { categories } = useCategories()
+  const { mutate: updateListing } = useUpdateListing()
+  const { selectedWebSlug } = useAppContext()
+
+  const showSuccessMessage = searchParams.get('editApplied') === 'true'
+
+  useEffect(() => {
+    if (showSuccessMessage) {
+      const newUrl = window.location.pathname
+      window.history.replaceState({}, '', newUrl)
+    }
+  }, [showSuccessMessage])
+
+  const goBack = () => {
+    // Return to the previous page so the listings filters (query params) are
+    // preserved. Fall back to /admin when there's no in-app history to go back
+    // to (e.g. the edit page was opened directly in a new tab).
+    if (window.history.length > 1) {
+      router.back()
+    } else {
+      router.push('/admin')
+    }
+  }
+
+  const handleSubmit = (data) => {
+    if (data.id) {
+      if (data.pending) {
+        data.isApprovingProposedListing = true
+      }
+      updateListing(data)
+    }
+    goBack()
+  }
+
+  const { listing, isPending } = useListing(slug)
+  const { listingEdits, isPending: isLoadingListingEdits } = useListingEdits(
+    slug,
+    selectedWebSlug,
+  )
+
+  if (!categories || !listing || isPending || isLoadingListingEdits) {
+    return <Spinner />
+  }
+
+  if (listingEdits && listingEdits.length > 0) {
+    return (
+      <div className="mx-auto max-w-5xl px-0 py-4 pb-16 md:px-10">
+        <button
+          className="mb-2 ml-2 flex items-center gap-2 text-gray-700 hover:text-gray-900"
+          onClick={goBack}
+        >
+          <HiArrowLeft className="h-4 w-4" />
+          Back
+        </button>
+
+        <div className="mt-4 flex flex-col items-center gap-4">
+          <div className="flex items-center gap-3 rounded-md bg-blue-50 p-4 text-blue-700">
+            <PiInfoBold className="h-5 w-5 shrink-0" />
+            This listing cannot be edited while it has a suggested edit awaiting
+            review. Please review the suggested edit first.
+          </div>
+          <Button asChild>
+            <NextLink href={`/admin/listings/${slug}/edits`}>
+              Review suggested edit
+            </NextLink>
+          </Button>
+        </div>
+      </div>
+    )
+  }
+
+  return (
+    <div className="mx-auto max-w-5xl px-0 py-4 pb-16 md:px-10">
+      <button
+        className="mb-2 ml-2 flex items-center gap-2 text-gray-700 hover:text-gray-900"
+        onClick={goBack}
+      >
+        <HiArrowLeft className="h-4 w-4" />
+        Back
+      </button>
+
+      {showSuccessMessage && (
+        <Alert className="mt-4">
+          <AlertTitle className="flex items-center justify-between">
+            Edit applied successfully
+          </AlertTitle>
+        </Alert>
+      )}
+
+      <div className="mt-4">
+        {!listing.pending && (
+          <p className="mb-4 text-sm">
+            You can view this listing at{' '}
+            <NextLink
+              href={`https://${selectedWebSlug}.resilienceweb.org.uk/${slug}`}
+              target="_blank"
+              className="text-blue-600 hover:text-blue-800 hover:underline"
+            >
+              {selectedWebSlug}.resilienceweb.org.uk/{slug}
+            </NextLink>
+          </p>
+        )}
+        <div className="overflow-hidden rounded-none shadow-md md:rounded-md">
+          {listing.pending && (
+            <div className="flex items-center gap-3 bg-purple-50 p-4 text-purple-900">
+              <PiInfoBold className="h-5 w-5 shrink-0" />
+              <div>
+                <p>
+                  This listing was submitted externally and is currently in
+                  pending state. Check through the information below, and if
+                  everything looks okay click <strong>Approve</strong>.
+                </p>
+                <p>
+                  Proposed by <strong>{listing.proposer.email}</strong>
+                </p>
+              </div>
+            </div>
+          )}
+          <div className="bg-white">
+            <ListingForm
+              categories={categories}
+              listing={listing}
+              handleSubmit={handleSubmit}
+              isSubmitting={isPending}
+            />
+          </div>
+        </div>
+      </div>
+    </div>
+  )
+}

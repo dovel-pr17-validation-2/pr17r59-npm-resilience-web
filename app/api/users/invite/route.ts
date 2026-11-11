@@ -1,0 +1,92 @@
+import type { NextRequest } from 'next/server'
+import { requireWebOwner } from '@/lib/api-authorization'
+import * as Sentry from '@sentry/nextjs'
+import prisma from '@prisma-rw'
+import { getSessionSafe } from '@auth'
+import { REMOTE_URL } from '@helpers/config'
+import { sendEmail } from '@helpers/email'
+import InviteEmail from '@components/emails/InviteEmail'
+import { addUserToWeb } from '@db/webAccessRepository'
+
+export async function POST(request: NextRequest) {
+  try {
+    const session = await getSessionSafe(request.headers)
+
+    if (!session) {
+      return Response.json(
+        {
+          error: `You don't have enough permissions to access this data.`,
+        },
+        { status: 403 },
+      )
+    }
+
+    const { email: emailAddress, web: webId, asOwner } = await request.json()
+    const email = emailAddress.trim().toLowerCase()
+
+    if (!email) {
+      return Response.json(
+        {
+          error: `Email not provided. Please make sure it's included in the request body.`,
+        },
+        { status: 400 },
+      )
+    }
+
+    if (!webId) {
+      return Response.json(
+        {
+          error: `Web not provided. Please make sure it's included in the request body.`,
+        },
+        { status: 400 },
+      )
+    }
+
+    // Owner, not editor: this grants access, and the admin UI only offers the
+    // invite form to owners.
+    const denied = await requireWebOwner(request, Number(webId))
+    if (denied) return denied
+
+    const selectedWeb = await prisma.web.findFirst({
+      where: { id: Number(webId), deletedAt: null },
+    })
+
+    if (!selectedWeb) {
+      return Response.json({ error: 'Web not found' }, { status: 404 })
+    }
+
+    if (asOwner) {
+      await addUserToWeb(email, webId, 'OWNER')
+    } else {
+      await addUserToWeb(email, webId, 'EDITOR')
+    }
+
+    const emailEncoded = encodeURIComponent(email)
+    const callToActionButtonUrl = `${REMOTE_URL}/activate?email=${emailEncoded}`
+
+    const inviteEmailComponent = InviteEmail({
+      webTitle: `${selectedWeb.title}`,
+      email: email,
+      url: callToActionButtonUrl,
+    })
+
+    await sendEmail({
+      to: email,
+      subject: `Your invite to ${selectedWeb.title} Resilience Web`,
+      email: inviteEmailComponent,
+    })
+
+    return Response.json({
+      message: 'Invite sent successfully',
+    })
+  } catch (e) {
+    console.error(`[RW] Unable to invite user - ${e}`)
+    Sentry.captureException(e)
+    return Response.json(
+      {
+        error: `Unable to invite user - ${e}`,
+      },
+      { status: 500 },
+    )
+  }
+}
